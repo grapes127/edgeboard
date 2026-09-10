@@ -1,9 +1,201 @@
-import {classify,price,type Market} from '@/lib/markets';
-import {upstream} from '@/lib/upstream';
-let seriesCache:{at:number;items:Record<string,string>}|null=null;
-async function getSeries(){if(seriesCache&&Date.now()-seriesCache.at<3600000)return seriesCache.items;try{const data=await upstream('https://external-api.kalshi.com/trade-api/v2/series');const items=Object.fromEntries((data.series||[]).map((s:any)=>[s.ticker,s.category]));seriesCache={at:Date.now(),items};return items}catch{return {}}}
-const arr=(v:any)=>{try{return Array.isArray(v)?v:JSON.parse(v||'[]')}catch{return []}};
-export async function GET(request:Request){const q=new URL(request.url).searchParams;const platform=q.get('platform');const cursor=q.get('cursor')||'';const ids=(q.get('ids')||'').split(',').filter(Boolean);if(ids.length>100||ids.some(id=>!/^[a-zA-Z0-9_.-]+$/.test(id)))return Response.json({error:'Invalid market IDs.'},{status:400});if(!['kalshi','polymarket'].includes(platform||'')||cursor.length>5000)return Response.json({error:'Invalid platform or cursor.'},{status:400});try{let markets:Market[]=[];let next:string|null=null;let warning:string|null=null;let scanned=0;
-if(platform==='kalshi'){const url=new URL('https://external-api.kalshi.com/trade-api/v2/markets');url.searchParams.set('status','open');url.searchParams.set('limit','1000');if(q.get('combos')!=='true')url.searchParams.set('mve_filter','exclude');if(cursor)url.searchParams.set('cursor',cursor);if(ids.length)url.searchParams.set('tickers',ids.join(','));const [data,cats]=await Promise.all([upstream(url.href),getSeries()]);const fetchedAt=Date.now();scanned=data.markets.length;next=data.cursor||null;markets=data.markets.filter((m:any)=>m.market_type==='binary'&&(!m.close_time||Date.parse(m.close_time)>fetchedAt)).map((m:any)=>{const series=m.event_ticker?.split('-')[0];const category=cats[series];return {id:m.ticker,platform:'kalshi',title:[m.title,m.yes_sub_title!==m.title?m.yes_sub_title:null].filter(Boolean).join(' · ')||m.ticker,category:category==='Sports'?'Sports':classify(`${category||''} ${m.title} ${series}`),categoryInferred:!category,end:m.close_time||null,yesAsk:price(m.yes_ask_dollars),noAsk:price(m.no_ask_dollars),volume:Number(m.volume_24h_fp||0),volumeUnit:'contracts',fetchedAt,url:`https://kalshi.com/markets/${encodeURIComponent(series?.toLowerCase()||m.ticker)}`,rules:[m.rules_primary,m.rules_secondary].filter(Boolean).join('\n\n'),combo:!!m.mve_collection_ticker}})}
-else{const url=new URL(ids.length?'https://gamma-api.polymarket.com/markets':'https://gamma-api.polymarket.com/markets/keyset');url.searchParams.set('active','true');url.searchParams.set('closed','false');url.searchParams.set('limit','200');if(cursor)url.searchParams.set('after_cursor',cursor);if(ids.length)for(const id of ids)url.searchParams.append('id',id);const result=await upstream(url.href);const data=Array.isArray(result)?{markets:result,next_cursor:null}:result;scanned=data.markets.length;next=data.next_cursor||null;const active=data.markets.filter((m:any)=>m.active&&!m.closed&&m.acceptingOrders&&m.enableOrderBook&&(!m.endDate||Date.parse(m.endDate)>Date.now())&&arr(m.outcomes).length===2);const requests=active.flatMap((m:any)=>arr(m.clobTokenIds).map((id:string)=>({token_id:id})));let prices:Record<string,{BUY?:string}>={};if(requests.length){try{const books=await upstream('https://clob.polymarket.com/books',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(requests)});prices=Object.fromEntries(books.map((book:any)=>{const asks=(book.asks||[]).map((level:any)=>Number(level.price)).filter((p:number)=>p>0&&p<1);return [book.asset_id,{BUY:asks.length?String(Math.min(...asks)):undefined}]}))}catch{warning='Polymarket order-book prices unavailable. These markets cannot qualify until quotes recover.'}}const fetchedAt=Date.now();markets=active.map((m:any)=>{const outcomes=arr(m.outcomes);const tokens=arr(m.clobTokenIds);const yes=outcomes.findIndex((x:string)=>x.toLowerCase()==='yes');const no=outcomes.findIndex((x:string)=>x.toLowerCase()==='no');const tags=[m.category,...(m.events||[]).flatMap((e:any)=>(e.tags||[]).map((t:any)=>t.label))].filter(Boolean).join(' ');return {id:m.id,platform:'polymarket',title:m.question,category:classify(`${tags} ${m.question}`),categoryInferred:true,end:m.endDate||null,yesAsk:yes>=0?price(prices[tokens[yes]]?.BUY):null,noAsk:no>=0?price(prices[tokens[no]]?.BUY):null,volume:Number(m.volume24hr||0),volumeUnit:'USD',fetchedAt,url:`https://polymarket.com/event/${encodeURIComponent(m.events?.[0]?.slug||m.slug)}`,rules:m.description||'',tokens:yes>=0&&no>=0?[tokens[yes],tokens[no]]:[],quoteWarning:yes<0||no<0?'Non-YES/NO outcome market; quotes not mapped.':warning||undefined}})}
-return Response.json({markets,next,scanned,warning,fetchedAt:Date.now()},{headers:{'Cache-Control':'no-store'}})}catch(error){return Response.json({error:error instanceof Error?error.message:'Unable to reach market provider.'},{status:502,headers:{'Cache-Control':'no-store'}})}}
+import { classify, price, type Market } from '@/lib/markets';
+import { upstream } from '@/lib/upstream';
+let seriesCache: { at: number; items: Record<string, string> } | null = null;
+async function getSeries() {
+  if (seriesCache && Date.now() - seriesCache.at < 3600000)
+    return seriesCache.items;
+  try {
+    const data = await upstream(
+      'https://external-api.kalshi.com/trade-api/v2/series',
+    );
+    const items = Object.fromEntries(
+      (data.series || []).map((s: any) => [s.ticker, s.category]),
+    );
+    seriesCache = { at: Date.now(), items };
+    return items;
+  } catch {
+    return {};
+  }
+}
+const arr = (v: any) => {
+  try {
+    return Array.isArray(v) ? v : JSON.parse(v || '[]');
+  } catch {
+    return [];
+  }
+};
+export async function GET(request: Request) {
+  const q = new URL(request.url).searchParams;
+  const platform = q.get('platform');
+  const cursor = q.get('cursor') || '';
+  const ids = (q.get('ids') || '').split(',').filter(Boolean);
+  if (ids.length > 100 || ids.some((id) => !/^[a-zA-Z0-9_.-]+$/.test(id)))
+    return Response.json({ error: 'Invalid market IDs.' }, { status: 400 });
+  if (
+    !['kalshi', 'polymarket'].includes(platform || '') ||
+    cursor.length > 5000
+  )
+    return Response.json(
+      { error: 'Invalid platform or cursor.' },
+      { status: 400 },
+    );
+  try {
+    let markets: Market[] = [];
+    let next: string | null = null;
+    let warning: string | null = null;
+    let scanned = 0;
+    if (platform === 'kalshi') {
+      const url = new URL(
+        'https://external-api.kalshi.com/trade-api/v2/markets',
+      );
+      url.searchParams.set('status', 'open');
+      url.searchParams.set('limit', '1000');
+      if (q.get('combos') !== 'true')
+        url.searchParams.set('mve_filter', 'exclude');
+      if (cursor) url.searchParams.set('cursor', cursor);
+      if (ids.length) url.searchParams.set('tickers', ids.join(','));
+      const [data, cats] = await Promise.all([upstream(url.href), getSeries()]);
+      const fetchedAt = Date.now();
+      scanned = data.markets.length;
+      next = data.cursor || null;
+      markets = data.markets
+        .filter(
+          (m: any) =>
+            m.market_type === 'binary' &&
+            (!m.close_time || Date.parse(m.close_time) > fetchedAt),
+        )
+        .map((m: any) => {
+          const series = m.event_ticker?.split('-')[0];
+          const category = cats[series];
+          return {
+            id: m.ticker,
+            platform: 'kalshi',
+            title:
+              [m.title, m.yes_sub_title !== m.title ? m.yes_sub_title : null]
+                .filter(Boolean)
+                .join(' · ') || m.ticker,
+            category:
+              category === 'Sports'
+                ? 'Sports'
+                : classify(`${category || ''} ${m.title} ${series}`),
+            categoryInferred: !category,
+            end: m.close_time || null,
+            yesAsk: price(m.yes_ask_dollars),
+            noAsk: price(m.no_ask_dollars),
+            volume: Number(m.volume_24h_fp || 0),
+            volumeUnit: 'contracts',
+            fetchedAt,
+            url: `https://kalshi.com/markets/${encodeURIComponent(series?.toLowerCase() || m.ticker)}`,
+            rules: [m.rules_primary, m.rules_secondary]
+              .filter(Boolean)
+              .join('\n\n'),
+            combo: !!m.mve_collection_ticker,
+          };
+        });
+    } else {
+      const url = new URL(
+        ids.length
+          ? 'https://gamma-api.polymarket.com/markets'
+          : 'https://gamma-api.polymarket.com/markets/keyset',
+      );
+      url.searchParams.set('active', 'true');
+      url.searchParams.set('closed', 'false');
+      url.searchParams.set('limit', '200');
+      if (cursor) url.searchParams.set('after_cursor', cursor);
+      if (ids.length) for (const id of ids) url.searchParams.append('id', id);
+      const result = await upstream(url.href);
+      const data = Array.isArray(result)
+        ? { markets: result, next_cursor: null }
+        : result;
+      scanned = data.markets.length;
+      next = data.next_cursor || null;
+      const active = data.markets.filter(
+        (m: any) =>
+          m.active &&
+          !m.closed &&
+          m.acceptingOrders &&
+          m.enableOrderBook &&
+          (!m.endDate || Date.parse(m.endDate) > Date.now()) &&
+          arr(m.outcomes).length === 2,
+      );
+      const requests = active.flatMap((m: any) =>
+        arr(m.clobTokenIds).map((id: string) => ({ token_id: id })),
+      );
+      let prices: Record<string, { BUY?: string }> = {};
+      if (requests.length) {
+        try {
+          const books = await upstream('https://clob.polymarket.com/books', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requests),
+          });
+          prices = Object.fromEntries(
+            books.map((book: any) => {
+              const asks = (book.asks || [])
+                .map((level: any) => Number(level.price))
+                .filter((p: number) => p > 0 && p < 1);
+              return [
+                book.asset_id,
+                { BUY: asks.length ? String(Math.min(...asks)) : undefined },
+              ];
+            }),
+          );
+        } catch {
+          warning =
+            'Polymarket order-book prices unavailable. These markets cannot qualify until quotes recover.';
+        }
+      }
+      const fetchedAt = Date.now();
+      markets = active.map((m: any) => {
+        const outcomes = arr(m.outcomes);
+        const tokens = arr(m.clobTokenIds);
+        const yes = outcomes.findIndex(
+          (x: string) => x.toLowerCase() === 'yes',
+        );
+        const no = outcomes.findIndex((x: string) => x.toLowerCase() === 'no');
+        const tags = [
+          m.category,
+          ...(m.events || []).flatMap((e: any) =>
+            (e.tags || []).map((t: any) => t.label),
+          ),
+        ]
+          .filter(Boolean)
+          .join(' ');
+        return {
+          id: m.id,
+          platform: 'polymarket',
+          title: m.question,
+          category: classify(`${tags} ${m.question}`),
+          categoryInferred: true,
+          end: m.endDate || null,
+          yesAsk: yes >= 0 ? price(prices[tokens[yes]]?.BUY) : null,
+          noAsk: no >= 0 ? price(prices[tokens[no]]?.BUY) : null,
+          volume: Number(m.volume24hr || 0),
+          volumeUnit: 'USD',
+          fetchedAt,
+          url: `https://polymarket.com/event/${encodeURIComponent(m.events?.[0]?.slug || m.slug)}`,
+          rules: m.description || '',
+          tokens: yes >= 0 && no >= 0 ? [tokens[yes], tokens[no]] : [],
+          quoteWarning:
+            yes < 0 || no < 0
+              ? 'Non-YES/NO outcome market; quotes not mapped.'
+              : warning || undefined,
+        };
+      });
+    }
+    return Response.json(
+      { markets, next, scanned, warning, fetchedAt: Date.now() },
+      { headers: { 'Cache-Control': 'no-store' } },
+    );
+  } catch (error) {
+    return Response.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Unable to reach market provider.',
+      },
+      { status: 502, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
+}
