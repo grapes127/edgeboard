@@ -1,6 +1,6 @@
 # Edgeboard
 
-A dark, responsive Kalshi / Polymarket scanner with live API pagination, YES and NO positions, category and closing-horizon filters, estimated edge sorting, independent AI rating sorting, watchlists, CSV export, and 60-second refresh.
+A dark, responsive Kalshi / Polymarket scanner with live API pagination, built-in automated probability estimates, YES and NO positions, category and closing-horizon filters, net-gap and AI-rating sorting, watchlists, CSV export, and 60-second refresh.
 
 ## Run
 
@@ -13,22 +13,9 @@ pnpm dev
 
 Production build: `pnpm build`. Worker output: `dist/server/index.js`. This site requires a server/Cloudflare Worker; GitHub Pages alone cannot host its market proxy.
 
-## Forecast connection
+## Built-in model
 
-No forecasts or AI scores are fabricated. With no source connected, qualified results are empty and all live markets can be explored through **Browse markets**.
-
-Connect a public HTTPS JSON URL from **Forecast source** (must support browser CORS), paste JSON for local import, or set `FORECAST_FEED_URL` and optional `FORECAST_FEED_TOKEN` as hosted environment secrets for a private feed. Local development keys match `.env.example`. Never commit credentials. Public feed URLs and imports are stored only in browser localStorage. Failed feeds clear their forecasts rather than continuing to recommend from an unavailable source.
-
-The JSON object has a `forecasts` array. Each entry requires:
-
-- `platform`: `kalshi` or `polymarket`
-- `marketId`: exact Kalshi market ticker or Polymarket Gamma market ID (not event or token ID)
-- `probabilityYes`: numeric 0–1
-- `source`, HTTPS `sourceUrl`, and `rationale`
-- `updatedAt` and `expiresAt`: ISO timestamps, expiry after update
-- Optional `ai`: `{ "yes": 7.8, "no": 2.2, "model": "your-model-name" }`
-
-The feed must derive forecasts independently and account for the precise settlement rules. Ratings come from the provider, are not calibrated win probabilities, and are not verified by Edgeboard. No AI inference service or paid data subscription is included. Imported forecasts do not refresh automatically.
+Edgeboard AI v1 automatically creates a numeric estimate and 1.0–10.0 score for every market with a usable quote. It uses the live YES/NO spread, quote freshness, and reported liquidity. The estimate is anchored to market prices, so it is a screening model rather than a true probability or independent factual forecast. No forecast connection or user API key is required.
 
 ## Calculation
 
@@ -44,7 +31,7 @@ NO uses `1 − probabilityYes` and its own ask and AI rating. Default qualificat
 
 - Kalshi: public `/trade-api/v2/markets` cursor pagination; default excludes multivariate combos. An optional methodology switch includes combos. Series metadata supplies category where available. Quote values use dollar fields.
 - Polymarket: Gamma `/markets/keyset` cursor pagination, followed by CLOB `/books` batches. Best asks are the minimum actual ask levels. Active, accepting-order, binary order-book markets are scanned. Only YES/NO labels map to forecasts; other two-outcome labels remain unquoted. Categories are inferred and labeled accordingly.
-- Scans progressively replace rows and expose scanned records, page count, completeness and errors. There is no claim that a scan is a synchronized snapshot. Metadata/quotes can change during pagination. Refresh triggers each 60 seconds while the browser page is open; an ongoing sweep is not overlapped. Markets with connected forecasts also receive a separate priority quote refresh every minute. Browsers may throttle background timers. Discovery and forecast-priority results are capped at 10,000 loaded markets per platform.
+- Discovery stops at 10,000 loaded markets per platform. Once a platform reaches the cap, its list stays in place instead of restarting. A rotating set of loaded quotes refreshes every minute. Browsers may throttle background timers.
 - Each fetched page has its own timestamp. No demo/sample market data appears as live results.
 - No trade placement, exchange wallet access or user authentication credentials are required for the public market reads.
 
